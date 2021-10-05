@@ -15,8 +15,8 @@
 #define SUCCESS 0
 #define FAIL -1
 struct EthArpPacket final {
-	EthHdr eth_;
-	ArpHdr arp_;
+    EthHdr eth_;
+    ArpHdr arp_;
 };
 typedef struct info {
     Ip target_ip;
@@ -96,7 +96,7 @@ int get_mac_by_ip(char* dev, Ip sender_ip, Mac attacker_mac, Ip attacker_ip, uin
 {
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
-    if (handle == nullptr) {
+    if(handle == nullptr) {
         printf("Failed to get MAC! (reason : couldn't open device %s - %s)\n",dev,errbuf);
         return FAIL;
     }
@@ -185,17 +185,17 @@ int arp_relay(pcap_t* handle, const u_char* temp_packet, Mac target_mac)
     return SUCCESS;
 }
 int main(int argc, char* argv[]) {
-    if (argc<4||argc&1) {
+    if(argc<4||argc&1) {
         usage();
         return -1;
-	}
-	char* dev = argv[1];
-	char errbuf[PCAP_ERRBUF_SIZE];
+    }
+    char* dev = argv[1];
+    char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
-	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
-		return -1;
-	}
+    if(handle == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
+        return -1;
+    }
     uint32_t ip;
     int ret=get_attacker_ip(dev, &ip);
     if(ret<0) return -1;
@@ -246,6 +246,6 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-	pcap_close(handle);
+    pcap_close(handle);
     return 0;
 }
