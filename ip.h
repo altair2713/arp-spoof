@@ -18,8 +18,6 @@ struct Ip final {
 	// comparison operator
 	bool operator == (const Ip& r) const { return ip_ == r.ip_; }
 
-    bool operator < (const Ip& r) { return this->ip_ < r.ip_; }
-
 	bool isLocalHost() const { // 127.*.*.*
 		uint8_t prefix = (ip_ & 0xFF000000) >> 24;
 		return prefix == 0x7F;
